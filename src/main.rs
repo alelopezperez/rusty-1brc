@@ -94,8 +94,10 @@ fn main() {
 
             reader.seek(SeekFrom::Start(start)).unwrap();
             let mut reader = reader.take(length);
+            let mut bilion: u64 = 0;
 
             while reader.read_line(&mut line).expect("Should not Fail") != 0 {
+                bilion += 1;
                 let (name, temp) = line
                     .trim()
                     .split_once(';')
@@ -120,27 +122,26 @@ fn main() {
             }
 
             println!("\t Finished thread # {i}");
-            measurements_map
+            (measurements_map, bilion)
         });
         handles.push(handle);
     }
 
     println!("Waiting for each thread");
 
-    let acc = handles
-        .into_iter()
-        .map(|x| x.join().unwrap())
-        .reduce(|mut acc, element| {
+    let acc = handles.into_iter().map(|x| x.join().unwrap()).fold(
+        BTreeMap::new(),
+        |mut acc, (element, _bil)| {
             for (k, v) in element {
                 let values = acc.entry(k).or_insert((f32::MAX, f32::MIN, 0.0, 0));
                 values.2 += v.2;
-                values.3 += 1;
+                values.3 += v.3;
                 values.0 = values.0.min(v.0);
-                values.1 = values.1.max(v.1)
+                values.1 = values.1.max(v.1);
             }
             acc
-        })
-        .unwrap();
+        },
+    );
 
     /*
     let mut acc = BTreeMap::new();
@@ -159,7 +160,7 @@ fn main() {
         .iter()
         .map(|(k, v)| {
             let avg = v.2 / (v.3 as f32);
-            format!("{k}={}/{}/{}", v.0, avg, v.1)
+            format!("{k}={}/{}/{} total {} count {}", v.0, avg, v.1, v.2, v.3)
         })
         .collect::<Vec<_>>();
 
