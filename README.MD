@@ -7,3 +7,6 @@ My Implementation of the one billion row challenge in rust
 - [x] First Naive Version with the following techniques
  * Multithreaded
  * Efficient Only std lib used 
+
+- [x] Optimized Versions with faster hashmap, memory mapping, and more optimized LLVM-lto and Codegen-units
+

@@ -1,12 +1,22 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     fs::File,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
     os::unix::fs::MetadataExt,
     thread::{self, available_parallelism},
 };
 
-fn create_fd(path: &str, num_cores: u64, chunk_size: u64, file_size: u64) -> Vec<(u64, u64)> {
+use bstr::{BStr, ByteSlice};
+
+use lazy_static::lazy_static;
+use memmap2::Mmap;
+use rustc_hash::FxHashMap as HashMap;
+
+lazy_static! {
+    static ref mmap: Mmap = unsafe { Mmap::map(&File::open("measurements.txt").unwrap()).unwrap() };
+}
+
+fn create_fd(path: &str, num_cores: u64, chunk_size: u64, file_size: u64) -> Vec<(usize, usize)> {
     let mut fd_vec = vec![];
 
     let mut buf_reader = BufReader::new(File::open(path).unwrap());
@@ -26,11 +36,11 @@ fn create_fd(path: &str, num_cores: u64, chunk_size: u64, file_size: u64) -> Vec
         }
 
         end = buf_reader.stream_position().unwrap();
-        fd_vec.push((start, end));
+        fd_vec.push((start as usize, end as usize));
         start = end;
     }
 
-    fd_vec.push((start, file_size));
+    fd_vec.push((start as usize, file_size as usize));
     fd_vec
 }
 
@@ -83,20 +93,36 @@ fn main() {
 
     println!("Starting threads");
 
-    for (i, range) in ranges.into_iter().enumerate() {
+    for range in ranges.into_iter() {
         let handle = thread::spawn(move || {
-            let file = File::open("measurements.txt").unwrap();
-            let mut reader = BufReader::new(file);
-            let mut line = String::new();
+            //let mut reader = BufReader::new(file);
+            //let mut line = String::new();
             let (start, end) = range;
-            let length = end - start;
-            let mut measurements_map = HashMap::<String, (f32, f32, f32, i64)>::new();
+            //let length = end - start;
+            let mut measurements_map = HashMap::<&BStr, (f32, f32, f32, i64)>::default();
 
-            reader.seek(SeekFrom::Start(start)).unwrap();
-            let mut reader = reader.take(length);
-            let mut bilion: u64 = 0;
+            //reader.seek(SeekFrom::Start(start)).unwrap();
 
-            while reader.read_line(&mut line).expect("Should not Fail") != 0 {
+            //let mut reader = reader.take(length);
+
+            let chunk = &mmap[start..end];
+            for reader in ByteSlice::lines(chunk) {
+                let (name, temp) = reader.split_once_str(";").unwrap();
+                let temp = fast_float::parse(temp).unwrap();
+
+                let values =
+                    measurements_map
+                        .entry(name.into())
+                        .or_insert((f32::MAX, f32::MIN, 0.0, 0));
+
+                values.2 += temp;
+                values.3 += 1;
+
+                values.0 = values.0.min(temp);
+                values.1 = values.1.max(temp);
+            }
+
+            /* while reader.read_line(&mut line).expect("Should not Fail") != 0 {
                 bilion += 1;
                 let (name, temp) = line
                     .trim()
@@ -119,29 +145,29 @@ fn main() {
                 values.0 = values.0.min(temp);
                 values.1 = values.1.max(temp);
                 line.clear();
-            }
+            } */
 
-            println!("\t Finished thread # {i}");
-            (measurements_map, bilion)
+            measurements_map
         });
         handles.push(handle);
     }
 
     println!("Waiting for each thread");
 
-    let acc = handles.into_iter().map(|x| x.join().unwrap()).fold(
-        BTreeMap::new(),
-        |mut acc, (element, _bil)| {
-            for (k, v) in element {
-                let values = acc.entry(k).or_insert((f32::MAX, f32::MIN, 0.0, 0));
-                values.2 += v.2;
-                values.3 += v.3;
-                values.0 = values.0.min(v.0);
-                values.1 = values.1.max(v.1);
-            }
-            acc
-        },
-    );
+    let acc =
+        handles
+            .into_iter()
+            .map(|x| x.join().unwrap())
+            .fold(BTreeMap::new(), |mut acc, element| {
+                for (k, v) in element {
+                    let values = acc.entry(k).or_insert((f32::MAX, f32::MIN, 0.0, 0));
+                    values.2 += v.2;
+                    values.3 += v.3;
+                    values.0 = values.0.min(v.0);
+                    values.1 = values.1.max(v.1);
+                }
+                acc
+            });
 
     /*
     let mut acc = BTreeMap::new();
@@ -160,7 +186,15 @@ fn main() {
         .iter()
         .map(|(k, v)| {
             let avg = v.2 / (v.3 as f32);
-            format!("{k}={}/{}/{} total {} count {}", v.0, avg, v.1, v.2, v.3)
+            format!(
+                "{}={}/{}/{} total {} count {}",
+                k.to_str().unwrap(),
+                v.0,
+                avg,
+                v.1,
+                v.2,
+                v.3
+            )
         })
         .collect::<Vec<_>>();
 
